@@ -66,6 +66,12 @@ jobs:
           buildah run "$CTR" \
             sh -c 'echo "#include <format>\n#include <print>\nint main() { std::println(\"{}\", 42); }" > /tmp/test.cpp && aarch64-linux-gnu-g++-14 -std=c++23 --sysroot=/opt/trixie-arm64-sysroot -o /tmp/test /tmp/test.cpp && file /tmp/test && qemu-aarch64-static /tmp/test'
 
+          echo "=== Sysroot gRPC / protobuf / runtime deps (Trixie aarch64) ==="
+          buildah run "$CTR" \
+            sh -c 'ls -1 /opt/trixie-arm64-sysroot/usr/lib/aarch64-linux-gnu/ | grep -E "^(libgrpc\+\+|libgrpc|libprotobuf|libabsl|libupb|libcares|libre2|libssl|libcrypto|libsystemd|libz)\." | sort'
+          buildah run "$CTR" \
+            sh -c 'dpkg --root=/opt/trixie-arm64-sysroot -l | grep -E "libgrpc|libprotobuf|libabsl|libupb|libcares|libre2|libssl|libsystemd|zlib" || true'
+
           buildah rm "$CTR"
 
       - name: Determine tags
