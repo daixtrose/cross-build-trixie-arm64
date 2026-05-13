@@ -112,6 +112,15 @@ RUN test ! -f /usr/aarch64-linux-gnu/include/features.h \
 RUN update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100 \
     && update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 100
 
+# ── QEMU sysroot prefix ───────────────────────────────────────────────
+# qemu-aarch64-static needs to resolve the dynamic linker
+# (/lib/ld-linux-aarch64.so.1) against the Trixie sysroot, not the
+# host's empty / .  QEMU_LD_PREFIX is the standard env var for this.
+# Setting it here means every `qemu-aarch64-static <binary>` inside
+# the container — including ctest's CMAKE_CROSSCOMPILING_EMULATOR
+# invocations — picks up the sysroot automatically, no per-call flag.
+ENV QEMU_LD_PREFIX=/opt/trixie-arm64-sysroot
+
 # ── Labels ────────────────────────────────────────────────────────────
 LABEL org.opencontainers.image.title="cross-build-trixie-arm64"
 LABEL org.opencontainers.image.description="GCC 14 cross-compilation environment targeting Debian Trixie aarch64 (glibc 2.41)"
