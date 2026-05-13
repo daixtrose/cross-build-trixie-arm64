@@ -95,10 +95,21 @@ RUN wget -qO- "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSI
 # Requires binfmt_misc + qemu-aarch64-static on the HOST kernel so
 # debootstrap can execute arm64 package scripts via QEMU emulation.
 # In CI, this is set up via docker/setup-qemu-action before the build.
+#
+# Pre-installed dev packages in the sysroot (saves ~20 min of
+# cross-built FetchContent per CI run downstream):
+#   - libgrpc++-dev / libprotobuf-dev: gRPC + protobuf C++ libs + headers,
+#     so smarcel-core-{status,controller}/grpc-service/CMakeLists.txt's
+#     `find_package(gRPC CONFIG QUIET)` succeeds and the FetchContent
+#     fallback never runs.  Trixie ships gRPC 1.71 (matches our pin in
+#     spirit; minor version drift is fine for the callback API + the
+#     wire protocol).
+#   - libsystemd-dev / libssl-dev: typical transitive deps for grpc
+#     and other server libs.
 RUN debootstrap \
         --arch=arm64 \
         --variant=minbase \
-        --include=libc6-dev,linux-libc-dev \
+        --include=libc6-dev,linux-libc-dev,libgrpc++-dev,libprotobuf-dev,libssl-dev,libsystemd-dev,zlib1g-dev \
         trixie \
         /opt/trixie-arm64-sysroot \
         http://deb.debian.org/debian
