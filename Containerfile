@@ -53,6 +53,30 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         qemu-user-static \
     && rm -rf /var/lib/apt/lists/*
 
+# ── Extra host-side tooling (Java codegen, protoc, comfort tools) ────
+# Requested by Java-using consumers of the image who want a full host
+# build environment without having to install these packages every
+# time they spin up the container.  All packages are HOST x86_64 —
+# the aarch64 cross-compiler still uses the sysroot for runtime.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        # Meta + build helpers
+        build-essential \
+        socat \
+        # Host protobuf/gRPC (for protoc + protoc-gen-grpc on x86_64,
+        # used to generate proto bindings before the cross-compile step)
+        libprotobuf-dev \
+        protobuf-compiler \
+        libgrpc++-dev \
+        protobuf-compiler-grpc \
+        # JVM toolchain for Java grpc-commander builds
+        openjdk-25-jdk \
+        gradle \
+        # Comfort tools so people can poke around inside the container
+        btop \
+        emacs-nox \
+        tcsh \
+    && rm -rf /var/lib/apt/lists/*
+
 # ── CMake 4.2.3 ──────────────────────────────────────────────────────
 ARG CMAKE_VERSION=4.2.3
 RUN wget -qO- "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz" \

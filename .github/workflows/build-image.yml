@@ -13,6 +13,10 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  # Opt JavaScript actions (actions/checkout, docker/setup-qemu-action,
+  # …) into Node.js 24 ahead of GitHub's June 2026 forced switch.
+  # Removes the "Node.js 20 actions are deprecated" warning.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build-and-push:
