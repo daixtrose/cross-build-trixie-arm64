@@ -65,8 +65,7 @@ jobs:
       - name: Build OCI image
         run: |
           set -eux
-          buildah --storage-driver vfs bud \
-              --isolation chroot \
+          buildah bud \
               --format oci \
               --layers \
               --cap-add SYS_ADMIN \
@@ -78,14 +77,14 @@ jobs:
         run: |
           set -eu
           IMG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:build"
-          CTR=$(buildah --storage-driver vfs from "$IMG")
+          CTR=$(buildah from "$IMG")
           echo "=== Node (the reason we patched the image) ==="
-          buildah --storage-driver vfs run "$CTR" -- node --version
+          buildah run "$CTR" -- node --version
           echo "=== Compiler ==="
-          buildah --storage-driver vfs run "$CTR" -- aarch64-linux-gnu-g++-14 --version | head -1
+          buildah run "$CTR" -- aarch64-linux-gnu-g++-14 --version | head -1
           echo "=== CMake ==="
-          buildah --storage-driver vfs run "$CTR" -- cmake --version | head -1
-          buildah --storage-driver vfs rm "$CTR"
+          buildah run "$CTR" -- cmake --version | head -1
+          buildah rm "$CTR"
 
       - name: Determine tags + push
         run: |
@@ -99,7 +98,7 @@ jobs:
               TAGS="${TAGS} ${REF}"
           fi
           for t in $TAGS; do
-              buildah --storage-driver vfs tag "${IMG}:build" "${IMG}:${t}"
-              buildah --storage-driver vfs push --tls-verify=true "${IMG}:${t}"
+              buildah tag "${IMG}:build" "${IMG}:${t}"
+              buildah push --tls-verify=true "${IMG}:${t}"
               echo "✓ pushed ${IMG}:${t}"
           done
