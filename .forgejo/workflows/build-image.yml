@@ -1,28 +1,26 @@
-name: Build and Push OCI Image (scm)
+name: Build and Push OCI Image (internal)
 
 # Forgejo-only build pipeline.  Lives at .forgejo/workflows/ so
 # GitHub Actions ignores it (GitHub only reads .github/workflows/).
-# When this repo is mirrored to scm.ird-cloud.de/ird/cross-build-trixie-arm64,
 # the Forgejo runner discovers this workflow and dispatches it on
 # manual trigger.
 #
 # Why a separate Forgejo workflow when GHCR already has the image:
 # we want the same image available from the in-house OCI registry at
-# scm.ird-cloud.de/ird/cross-build-trixie-arm64 so cluster-internal
 # consumers don't depend on GHCR being reachable.  The image content
 # is identical; only the storage location differs.
 #
 # Trigger is workflow_dispatch only.  Auto-rebuild on every push to
 # main would double-bake (GitHub already rebuilds via
 # .github/workflows/build-image.yml).  When upstream GHCR has a new
-# tag, run this manually to refresh scm.
+# tag, run this manually to refresh the internal registry.
 
 on:
   workflow_dispatch:
 
 env:
-  REGISTRY: scm.ird-cloud.de
-  IMAGE_NAME: ird/cross-build-trixie-arm64
+  REGISTRY: ${{ vars.PUBLISH_HOST }}
+  IMAGE_NAME: ${{ vars.PUBLISH_ORG }}/cross-build-trixie-arm64
   # Match consumer release.yml — opt JS actions (checkout/cache/upload)
   # into Node.js 24, removing the deprecation warning.
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -52,13 +50,13 @@ jobs:
 
       - name: Log in to ${{ env.REGISTRY }}
         env:
-          SCM_TOKEN: ${{ secrets.SCM_REGISTRY_PUBLISHER_TOKEN }}
+          PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
         run: |
           set -eu
-          : "${SCM_TOKEN:?SCM_REGISTRY_PUBLISHER_TOKEN must be set as an org-level secret}"
-          echo "$SCM_TOKEN" | \
+          : "${PUBLISH_TOKEN:?PUBLISH_TOKEN must be set as an org-level secret}"
+          echo "$PUBLISH_TOKEN" | \
               buildah login --tls-verify=true \
-                            --username ird-deb-publisher \
+                            --username ${{ vars.PUBLISH_USER }} \
                             --password-stdin \
                             "${{ env.REGISTRY }}"
 
