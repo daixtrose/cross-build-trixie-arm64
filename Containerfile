@@ -77,6 +77,32 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         tcsh \
     && rm -rf /var/lib/apt/lists/*
 
+# ── Node.js 24 (for Forgejo / Gitea Actions JS actions) ──────────────
+# Forgejo's act-runner executes JavaScript actions (actions/checkout,
+# actions/cache, actions/upload-artifact, …) via `docker exec node …`
+# *inside* this container.  Without node here, `actions/checkout@v4`
+# fails immediately with "exec: node: executable file not found in
+# $PATH".  GitHub Actions sidesteps this by running JS actions on the
+# runner host instead of the workflow container; act-runner does not.
+#
+# Node 24 LTS picked to match FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true
+# in consumer release.yml files.  Installed from nodejs.org's official
+# tarball (no extra apt source) so it stays decoupled from Ubuntu's
+# nodejs package and only adds ~80 MB.
+RUN set -eux; \
+    apt-get update && apt-get install -y --no-install-recommends xz-utils \
+        && rm -rf /var/lib/apt/lists/*; \
+    NODE_VERSION="24.15.0"; \
+    wget -q -O /tmp/node.tar.xz \
+        "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz"; \
+    mkdir -p /opt/nodejs; \
+    tar -xJf /tmp/node.tar.xz --strip-components=1 -C /opt/nodejs; \
+    ln -s /opt/nodejs/bin/node /usr/local/bin/node; \
+    ln -s /opt/nodejs/bin/npm  /usr/local/bin/npm; \
+    ln -s /opt/nodejs/bin/npx  /usr/local/bin/npx; \
+    rm -f /tmp/node.tar.xz; \
+    node --version && npm --version
+
 # ── CMake 4.2.3 ──────────────────────────────────────────────────────
 ARG CMAKE_VERSION=4.2.3
 RUN wget -qO- "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz" \
