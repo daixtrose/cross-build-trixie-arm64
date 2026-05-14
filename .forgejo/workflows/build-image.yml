@@ -51,6 +51,8 @@ jobs:
       - name: Log in to ${{ env.REGISTRY }}
         env:
           PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+          PUBLISH_HOST: ${{ vars.PUBLISH_HOST }}
+          PUBLISH_USER: ${{ vars.PUBLISH_USER }}
         run: |
           set -eu
           : "${PUBLISH_TOKEN:?PUBLISH_TOKEN must be set as an org-level secret}"
