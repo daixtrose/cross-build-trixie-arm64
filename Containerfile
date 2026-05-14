@@ -47,6 +47,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         # SCM & networking
         git \
         wget \
+        curl \
         ca-certificates \
         # Sysroot creation
         debootstrap \
