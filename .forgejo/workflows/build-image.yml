@@ -1,0 +1,105 @@
+name: Build and Push OCI Image (scm)
+
+# Forgejo-only build pipeline.  Lives at .forgejo/workflows/ so
+# GitHub Actions ignores it (GitHub only reads .github/workflows/).
+# When this repo is mirrored to scm.ird-cloud.de/ird/cross-build-trixie-arm64,
+# the Forgejo runner discovers this workflow and dispatches it on
+# manual trigger.
+#
+# Why a separate Forgejo workflow when GHCR already has the image:
+# we want the same image available from the in-house OCI registry at
+# scm.ird-cloud.de/ird/cross-build-trixie-arm64 so cluster-internal
+# consumers don't depend on GHCR being reachable.  The image content
+# is identical; only the storage location differs.
+#
+# Trigger is workflow_dispatch only.  Auto-rebuild on every push to
+# main would double-bake (GitHub already rebuilds via
+# .github/workflows/build-image.yml).  When upstream GHCR has a new
+# tag, run this manually to refresh scm.
+
+on:
+  workflow_dispatch:
+
+env:
+  REGISTRY: scm.ird-cloud.de
+  IMAGE_NAME: ird/cross-build-trixie-arm64
+  # Match consumer release.yml — opt JS actions (checkout/cache/upload)
+  # into Node.js 24, removing the deprecation warning.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-24.04
+    # No `container:` — we run in the runner's host image (node:20-bookworm),
+    # which has node for actions/checkout.  Bookworm has buildah in apt.
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install buildah
+        run: |
+          set -eux
+          apt-get update
+          apt-get install -y --no-install-recommends \
+              buildah \
+              fuse-overlayfs \
+              ca-certificates
+          buildah version
+
+      - name: Log in to ${{ env.REGISTRY }}
+        env:
+          SCM_TOKEN: ${{ secrets.SCM_REGISTRY_PUBLISHER_TOKEN }}
+        run: |
+          set -eu
+          : "${SCM_TOKEN:?SCM_REGISTRY_PUBLISHER_TOKEN must be set as an org-level secret}"
+          echo "$SCM_TOKEN" | \
+              buildah login --tls-verify=true \
+                            --username ird-deb-publisher \
+                            --password-stdin \
+                            "${{ env.REGISTRY }}"
+
+      - name: Build OCI image
+        run: |
+          set -eux
+          buildah --storage-driver vfs bud \
+              --isolation chroot \
+              --format oci \
+              --layers \
+              --cap-add SYS_ADMIN \
+              -t "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:build" \
+              -f Containerfile \
+              .
+
+      - name: Smoke test
+        run: |
+          set -eu
+          IMG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:build"
+          CTR=$(buildah --storage-driver vfs from "$IMG")
+          echo "=== Node (the reason we patched the image) ==="
+          buildah --storage-driver vfs run "$CTR" -- node --version
+          echo "=== Compiler ==="
+          buildah --storage-driver vfs run "$CTR" -- aarch64-linux-gnu-g++-14 --version | head -1
+          echo "=== CMake ==="
+          buildah --storage-driver vfs run "$CTR" -- cmake --version | head -1
+          buildah --storage-driver vfs rm "$CTR"
+
+      - name: Determine tags + push
+        run: |
+          set -eux
+          IMG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          # Always push :latest from main.  Tag pushes (v*) get the
+          # tag too — caller can re-trigger after upstream tags.
+          TAGS="latest"
+          REF="${GITHUB_REF##*/}"
+          if [[ "$REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+              TAGS="${TAGS} ${REF}"
+          fi
+          for t in $TAGS; do
+              buildah --storage-driver vfs tag "${IMG}:build" "${IMG}:${t}"
+              buildah --storage-driver vfs push --tls-verify=true "${IMG}:${t}"
+              echo "✓ pushed ${IMG}:${t}"
+          done
