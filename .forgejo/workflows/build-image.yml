@@ -42,11 +42,17 @@ jobs:
         run: |
           set -eux
           apt-get update
+          # `crun` is the OCI runtime buildah shells out to for every RUN
+          # step.  On Debian it's `Recommends: crun | runc`, so
+          # --no-install-recommends drops it and buildah fails with
+          # `exec: no command` on the first RUN.  Pull it in explicitly.
           apt-get install -y --no-install-recommends \
               buildah \
+              crun \
               fuse-overlayfs \
               ca-certificates
           buildah version
+          crun --version
 
       - name: Log in to ${{ env.REGISTRY }}
         env:
