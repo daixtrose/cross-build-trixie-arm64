@@ -54,6 +54,26 @@ jobs:
           buildah version
           crun --version
 
+      - name: Register qemu-aarch64-static binfmt handlers
+        # debootstrap inside the build chroots into the freshly-extracted
+        # arm64 sysroot and runs aarch64 binaries (e.g. `/bin/true`) via
+        # qemu-user binfmt_misc.  GitHub-hosted runners get those handlers
+        # for free; self-hosted Forgejo runners don't.  tonistiigi/binfmt
+        # installs them in one shot (`docker/setup-qemu-action` upstream
+        # is just a wrapper around this same image).
+        run: |
+          set -eux
+          buildah pull docker.io/tonistiigi/binfmt:latest
+          buildah run \
+              --cap-add ALL \
+              --net host \
+              -v /proc/sys/fs/binfmt_misc:/proc/sys/fs/binfmt_misc \
+              "$(buildah from docker.io/tonistiigi/binfmt:latest)" \
+              --install arm64
+          # Verify the handler is active.
+          ls /proc/sys/fs/binfmt_misc/ | grep -E 'qemu-aarch64' || \
+              (echo "::error::qemu-aarch64 binfmt handler not registered"; exit 1)
+
       - name: Log in to ${{ env.REGISTRY }}
         env:
           PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
