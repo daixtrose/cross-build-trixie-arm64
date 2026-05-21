@@ -76,9 +76,12 @@ jobs:
               "$CTR" \
               /usr/bin/binfmt --install arm64
           buildah rm "$CTR"
-          # Verify the handler is active.
-          ls /proc/sys/fs/binfmt_misc/ | grep -E 'qemu-aarch64' || \
-              (echo "::error::qemu-aarch64 binfmt handler not registered"; exit 1)
+          # tonistiigi/binfmt prints "installing: arm64 OK" + a JSON list
+          # of registered emulators on success.  We don't try to verify by
+          # listing /proc/sys/fs/binfmt_misc/ ourselves — the runner
+          # container's view of that pseudo-fs differs from the host's
+          # (where the registration actually lives), and the bind-mount
+          # we passed to the binfmt container is one-way for write.
 
       - name: Log in to ${{ env.REGISTRY }}
         env:
