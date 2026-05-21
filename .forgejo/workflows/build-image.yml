@@ -100,7 +100,17 @@ jobs:
       - name: Build OCI image
         run: |
           set -eux
+          # --isolation chroot makes RUN steps execute in the runner's
+          # own mount/user namespace instead of a fresh OCI container
+          # namespace.  Required so the qemu-aarch64 binfmt handler we
+          # registered in the previous step is visible to debootstrap's
+          # chroot exec (modern kernels namespace-scope binfmt_misc, so
+          # the registration doesn't propagate into a fresh user-ns
+          # child container).  Commit 7bbd83e dropped this with "now
+          # that runner has privileged" — that turned out to not cover
+          # binfmt_misc inheritance; restoring it.
           buildah bud \
+              --isolation chroot \
               --format oci \
               --layers \
               --cap-add SYS_ADMIN \
