@@ -169,6 +169,28 @@ RUN test ! -f /usr/aarch64-linux-gnu/include/features.h \
     && echo "✓ Host glibc 2.39 headers removed (no shadowing)" \
     || (echo "✗ Host glibc 2.39 headers still present" && exit 1)
 
+# ── Pre-stage gRPC codegen entries in the sysroot ─────────────────────
+# Debian Trixie's gRPCConfig.cmake (shipped by libgrpc-dev inside the
+# sysroot) declares IMPORTED_LOCATION paths at
+# /opt/trixie-arm64-sysroot/usr/bin/{protoc,grpc_cpp_plugin,grpc_*_plugin}
+# and runs an existence check on every one of them at find_package()
+# time.  The Debian package does NOT ship those binaries — codegen
+# tools are host-architecture and live in /usr/bin/ (installed earlier
+# in this image via protobuf-compiler + protobuf-compiler-grpc).
+#
+# Bridge the gap once here so downstream consumers don't need root at
+# configure time just to satisfy the sanity check.  Without this,
+# `grpc-interface/CMakeLists.txt` would have to write into the
+# root-owned sysroot itself, which breaks any `--user`-style invocation
+# of the cross-build container.
+RUN ln -sf /usr/bin/protoc          /opt/trixie-arm64-sysroot/usr/bin/protoc \
+ && ln -sf /usr/bin/grpc_cpp_plugin /opt/trixie-arm64-sysroot/usr/bin/grpc_cpp_plugin \
+ && for p in grpc_csharp_plugin grpc_node_plugin grpc_objective_c_plugin \
+             grpc_php_plugin grpc_python_plugin grpc_ruby_plugin ; do \
+        touch /opt/trixie-arm64-sysroot/usr/bin/$p ; \
+    done \
+ && echo "✓ Pre-staged gRPC codegen entries in sysroot/usr/bin/"
+
 # ── Default compiler symlinks ─────────────────────────────────────────
 # Ensure 'gcc' / 'g++' point to version 14
 RUN update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100 \
