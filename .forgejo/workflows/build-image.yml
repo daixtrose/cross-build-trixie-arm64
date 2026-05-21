@@ -61,15 +61,21 @@ jobs:
         # for free; self-hosted Forgejo runners don't.  tonistiigi/binfmt
         # installs them in one shot (`docker/setup-qemu-action` upstream
         # is just a wrapper around this same image).
+        #
+        # `buildah run` doesn't honour the image's ENTRYPOINT, so we have
+        # to name the entrypoint binary explicitly (`/usr/bin/binfmt`);
+        # the `--install arm64` args go to that binary.
         run: |
           set -eux
           buildah pull docker.io/tonistiigi/binfmt:latest
+          CTR=$(buildah from docker.io/tonistiigi/binfmt:latest)
           buildah run \
               --cap-add ALL \
               --net host \
               -v /proc/sys/fs/binfmt_misc:/proc/sys/fs/binfmt_misc \
-              "$(buildah from docker.io/tonistiigi/binfmt:latest)" \
-              --install arm64
+              "$CTR" \
+              /usr/bin/binfmt --install arm64
+          buildah rm "$CTR"
           # Verify the handler is active.
           ls /proc/sys/fs/binfmt_misc/ | grep -E 'qemu-aarch64' || \
               (echo "::error::qemu-aarch64 binfmt handler not registered"; exit 1)
