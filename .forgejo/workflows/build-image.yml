@@ -7,13 +7,26 @@ name: Build and Push OCI Image (internal)
 #
 # Why a separate Forgejo workflow when GHCR already has the image:
 # we want the same image available from the in-house OCI registry at
-# consumers don't depend on GHCR being reachable.  The image content
-# is identical; only the storage location differs.
+# scm.ird-cloud.de so consumers don't depend on GHCR being reachable.
+# The image content is identical; only the storage location differs.
 #
 # Trigger is workflow_dispatch only.  Auto-rebuild on every push to
 # main would double-bake (GitHub already rebuilds via
 # .github/workflows/build-image.yml).  When upstream GHCR has a new
 # tag, run this manually to refresh the internal registry.
+#
+# Build substrate — docker against the dind sidecar (NOT buildah):
+# the runner pod ships a privileged `docker:dind` sidecar reachable at
+# DOCKER_HOST=tcp://localhost:2375 (k8s/templates/forgejo.yaml).  We
+# build by shipping the Containerfile to that daemon.  buildah broke
+# here because the heavy arm64 sysroot extraction is a build-time RUN
+# (Containerfile `debootstrap` step): its chroot-exec of aarch64
+# binaries needs binfmt_misc, but buildah's per-RUN unshare(CLONE_NEWUSER)
+# under nested k3s namespacing doesn't inherit the host registration.
+# dind sets up its namespaces once at daemon startup, so binfmt
+# registered at the daemon level (via tonistiigi/binfmt) is visible to
+# every RUN — including the debootstrap chroot.  Hence: register qemu
+# BEFORE `docker build`.
 
 on:
   workflow_dispatch:
@@ -21,6 +34,8 @@ on:
 env:
   REGISTRY: ${{ vars.PUBLISH_HOST }}
   IMAGE_NAME: ${{ vars.PUBLISH_ORG }}/cross-build-trixie-arm64
+  # docker CLI talks to the privileged dind sidecar in the runner pod.
+  DOCKER_HOST: tcp://localhost:2375
   # Match consumer release.yml — opt JS actions (checkout/cache/upload)
   # into Node.js 24, removing the deprecation warning.
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -29,7 +44,8 @@ jobs:
   build-and-push:
     runs-on: ubuntu-24.04
     # No `container:` — we run in the runner's host image (node:20-bookworm),
-    # which has node for actions/checkout.  Bookworm has buildah in apt.
+    # which has node for actions/checkout and the docker CLI on PATH.
+    # The actual build is shipped to the dind daemon over DOCKER_HOST.
     permissions:
       contents: read
       packages: write
@@ -38,50 +54,35 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install buildah
+      - name: Verify docker / dind daemon reachable
+        # Sanity-gate the build: the runner only works if the privileged
+        # docker:dind sidecar is up and DOCKER_HOST points at it.  Print
+        # the Server Version so the run log proves the client reached the
+        # daemon (not just the client binary).  The node:20-bookworm
+        # runner image already carries the docker CLI; install it only if
+        # it is somehow missing.
         run: |
           set -eux
-          apt-get update
-          # `crun` is the OCI runtime buildah shells out to for every RUN
-          # step.  On Debian it's `Recommends: crun | runc`, so
-          # --no-install-recommends drops it and buildah fails with
-          # `exec: no command` on the first RUN.  Pull it in explicitly.
-          apt-get install -y --no-install-recommends \
-              buildah \
-              crun \
-              fuse-overlayfs \
-              ca-certificates
-          buildah version
-          crun --version
+          if ! command -v docker >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y --no-install-recommends docker.io ca-certificates
+          fi
+          docker version
 
-      - name: Register qemu-aarch64-static binfmt handlers
-        # debootstrap inside the build chroots into the freshly-extracted
-        # arm64 sysroot and runs aarch64 binaries (e.g. `/bin/true`) via
-        # qemu-user binfmt_misc.  GitHub-hosted runners get those handlers
-        # for free; self-hosted Forgejo runners don't.  tonistiigi/binfmt
-        # installs them in one shot (`docker/setup-qemu-action` upstream
-        # is just a wrapper around this same image).
-        #
-        # `buildah run` doesn't honour the image's ENTRYPOINT, so we have
-        # to name the entrypoint binary explicitly (`/usr/bin/binfmt`);
-        # the `--install arm64` args go to that binary.
+      - name: Register qemu-aarch64 binfmt handlers (on the dind daemon)
+        # The Containerfile's `debootstrap --arch=arm64` step (and the
+        # arch sanity RUNs after it) chroot into the freshly-extracted
+        # sysroot and execute aarch64 binaries via qemu-user binfmt_misc.
+        # GitHub-hosted runners get these handlers for free; the dind
+        # daemon does not.  Running tonistiigi/binfmt --privileged
+        # registers them at the daemon level (this is exactly what
+        # docker/setup-qemu-action wraps).  MUST run before `docker build`
+        # because the heavy sysroot extraction is a build-time RUN.
         run: |
           set -eux
-          buildah pull docker.io/tonistiigi/binfmt:latest
-          CTR=$(buildah from docker.io/tonistiigi/binfmt:latest)
-          buildah run \
-              --cap-add ALL \
-              --net host \
-              -v /proc/sys/fs/binfmt_misc:/proc/sys/fs/binfmt_misc \
-              "$CTR" \
-              /usr/bin/binfmt --install arm64
-          buildah rm "$CTR"
-          # tonistiigi/binfmt prints "installing: arm64 OK" + a JSON list
-          # of registered emulators on success.  We don't try to verify by
-          # listing /proc/sys/fs/binfmt_misc/ ourselves — the runner
-          # container's view of that pseudo-fs differs from the host's
-          # (where the registration actually lives), and the bind-mount
-          # we passed to the binfmt container is one-way for write.
+          docker run --rm --privileged tonistiigi/binfmt --install arm64
+          # Print the table so the log shows `arm64` as an emulated arch.
+          docker run --rm --privileged tonistiigi/binfmt
 
       - name: Log in to ${{ env.REGISTRY }}
         env:
@@ -92,58 +93,50 @@ jobs:
           set -eu
           : "${PUBLISH_TOKEN:?PUBLISH_TOKEN must be set as an org-level secret}"
           echo "$PUBLISH_TOKEN" | \
-              buildah login --tls-verify=true \
-                            --username ${{ vars.PUBLISH_USER }} \
-                            --password-stdin \
-                            "${{ env.REGISTRY }}"
+              docker login \
+                  --username "$PUBLISH_USER" \
+                  --password-stdin \
+                  "$REGISTRY"
 
       - name: Build OCI image
         run: |
           set -eux
-          # --isolation chroot makes RUN steps execute in the runner's
-          # own mount/user namespace instead of a fresh OCI container
-          # namespace.  Required so the qemu-aarch64 binfmt handler we
-          # registered in the previous step is visible to debootstrap's
-          # chroot exec (modern kernels namespace-scope binfmt_misc, so
-          # the registration doesn't propagate into a fresh user-ns
-          # child container).  Commit 7bbd83e dropped this with "now
-          # that runner has privileged" — that turned out to not cover
-          # binfmt_misc inheritance; restoring it.
-          buildah bud \
-              --isolation chroot \
-              --format oci \
-              --layers \
-              --cap-add SYS_ADMIN \
-              -t "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:build" \
+          # Ship the build to the dind daemon.  binfmt was registered at
+          # the daemon level in the previous step, so the debootstrap RUN
+          # resolves its aarch64 chroot-exec via qemu-user — no per-RUN
+          # CLONE_NEWUSER / exec-format-error that broke buildah here.
+          docker build \
+              -t "${REGISTRY}/${IMAGE_NAME}:build" \
               -f Containerfile \
               .
 
       - name: Smoke test
         run: |
           set -eu
-          IMG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:build"
-          CTR=$(buildah from "$IMG")
+          IMG="${REGISTRY}/${IMAGE_NAME}:build"
           echo "=== Node (the reason we patched the image) ==="
-          buildah run "$CTR" -- node --version
-          echo "=== Compiler ==="
-          buildah run "$CTR" -- aarch64-linux-gnu-g++-14 --version | head -1
+          docker run --rm "$IMG" node --version
+          echo "=== Cross-compiler ==="
+          docker run --rm "$IMG" aarch64-linux-gnu-g++-14 --version | head -1
           echo "=== CMake ==="
-          buildah run "$CTR" -- cmake --version | head -1
-          buildah rm "$CTR"
+          docker run --rm "$IMG" cmake --version | head -1
+          echo "=== Sysroot glibc (runtime libc.so.6 path) ==="
+          docker run --rm "$IMG" \
+              ls -la /opt/trixie-arm64-sysroot/usr/lib/aarch64-linux-gnu/libc.so.6
 
       - name: Determine tags + push
         run: |
           set -eux
-          IMG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
-          # Always push :latest from main.  Tag pushes (v*) get the
-          # tag too — caller can re-trigger after upstream tags.
-          TAGS="latest"
+          IMG="${REGISTRY}/${IMAGE_NAME}"
+          # Always push :latest.  Add a dated tag for reproducibility,
+          # and the semver tag when the run was dispatched on a v* ref.
+          TAGS="latest $(date +%Y%m%d)"
           REF="${GITHUB_REF##*/}"
           if [[ "$REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
-              TAGS="${TAGS} ${REF}"
+              TAGS="${TAGS} ${REF#v}"
           fi
           for t in $TAGS; do
-              buildah tag "${IMG}:build" "${IMG}:${t}"
-              buildah push --tls-verify=true "${IMG}:${t}"
-              echo "✓ pushed ${IMG}:${t}"
+              docker tag "${IMG}:build" "${IMG}:${t}"
+              docker push "${IMG}:${t}"
+              echo "pushed ${IMG}:${t}"
           done
