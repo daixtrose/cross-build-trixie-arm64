@@ -34,8 +34,11 @@ on:
 env:
   REGISTRY: ${{ vars.PUBLISH_HOST }}
   IMAGE_NAME: ${{ vars.PUBLISH_ORG }}/cross-build-trixie-arm64
-  # docker CLI talks to the privileged dind sidecar in the runner pod.
-  DOCKER_HOST: tcp://localhost:2375
+  # NB: DOCKER_HOST is NOT a static tcp://localhost:2375 — the runner label
+  # ubuntu-24.04:docker://node:20-bookworm runs every job inside a container on
+  # act_runner's own per-job network, where localhost is NOT the dind sidecar.
+  # The first step derives the dind daemon's address from the default gateway
+  # and exports DOCKER_HOST for the rest of the job.
   # Match consumer release.yml — opt JS actions (checkout/cache/upload)
   # into Node.js 24, removing the deprecation warning.
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -43,9 +46,9 @@ env:
 jobs:
   build-and-push:
     runs-on: ubuntu-24.04
-    # No `container:` — we run in the runner's host image (node:20-bookworm),
-    # which has node for actions/checkout and the docker CLI on PATH.
-    # The actual build is shipped to the dind daemon over DOCKER_HOST.
+    # The job runs inside node:20-bookworm (the runner label's container); the
+    # first step installs the docker CLI and points DOCKER_HOST at the dind
+    # daemon via the default gateway. The build is shipped to that daemon.
     permissions:
       contents: read
       packages: write
@@ -54,19 +57,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify docker / dind daemon reachable
-        # Sanity-gate the build: the runner only works if the privileged
-        # docker:dind sidecar is up and DOCKER_HOST points at it.  Print
-        # the Server Version so the run log proves the client reached the
-        # daemon (not just the client binary).  The node:20-bookworm
-        # runner image already carries the docker CLI; install it only if
-        # it is somehow missing.
+      - name: Install docker CLI + reach the dind daemon
+        shell: bash
+        # The job runs inside a node:20-bookworm container on act_runner's
+        # per-job network, so the dind sidecar is NOT at localhost. Install the
+        # docker client (node:20-bookworm has node but not docker), then point
+        # DOCKER_HOST at the job's default-route gateway (the docker bridge
+        # gateway lives in the dind/pod netns where 2375 listens). Export it via
+        # $GITHUB_ENV so binfmt/login/build/push all use it.
         run: |
           set -eux
           if ! command -v docker >/dev/null 2>&1; then
             apt-get update
             apt-get install -y --no-install-recommends docker.io ca-certificates
           fi
+          G=$(awk '$2=="00000000"{print $3; exit}' /proc/net/route)
+          printf -v GWIP "%d.%d.%d.%d" "0x${G:6:2}" "0x${G:4:2}" "0x${G:2:2}" "0x${G:0:2}"
+          echo "DOCKER_HOST=tcp://${GWIP}:2375" >> "$GITHUB_ENV"
+          export DOCKER_HOST="tcp://${GWIP}:2375"
+          echo "using DOCKER_HOST=$DOCKER_HOST"
+          for i in $(seq 1 15); do docker version && break; echo "waiting for dind ($i)..."; sleep 2; done
           docker version
 
       - name: Register qemu-aarch64 binfmt handlers (on the dind daemon)
