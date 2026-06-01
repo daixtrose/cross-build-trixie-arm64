@@ -90,6 +90,13 @@ jobs:
         # because the heavy sysroot extraction is a build-time RUN.
         run: |
           set -eux
+          # Force a FRESH registration: binfmt_misc is node-global and survives
+          # dind pod restarts, so a stale entry from a previous run (whose
+          # qemu interpreter FD died with that dind container) lingers and makes
+          # `--install` a no-op ("already registered") → the debootstrap chroot
+          # then fails to exec aarch64 /bin/true. Uninstall first, then install,
+          # so the interpreter FD is live for THIS build.
+          docker run --rm --privileged tonistiigi/binfmt --uninstall 'qemu-*' || true
           docker run --rm --privileged tonistiigi/binfmt --install arm64
           # Print the table so the log shows `arm64` as an emulated arch.
           docker run --rm --privileged tonistiigi/binfmt
